@@ -1,0 +1,28 @@
+# Python environment & dependencies
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Data & ML experiment tracking
+data/
+mlruns/
+.pytest_cache/
+
+# Local configuration & environment variables
+.env
+.vscode/
+
+# System-generated files
+.DS_Store
+Thumbs.db
+
+# Ignore thinking train inside src/
+src/thinking train/
+
+# Template_guide
+/TEMPLATE_GUIDE.md
+
+# Logs
+logs/
