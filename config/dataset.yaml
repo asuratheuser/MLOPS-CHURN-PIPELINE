@@ -1,0 +1,14 @@
+dataset:
+  name: "telco_customer_churn"
+  
+  # Primary GitHub source (Replace 'master' with the specific commit SHA for true immutability)
+  primary_url: "https://raw.githubusercontent.com/IBM/telco-customer-churn-on-icp4d/master/data/Telco-Customer-Churn.csv"
+  
+  # Secondary zero-cost backup on Hugging Face (Converted from page view to raw direct file download link)
+  backup_url: "https://huggingface.co/datasets/aai510-group1/telco-customer-churn/resolve/main/Telco-Customer-Churn.csv"
+  
+  # Ground truth SHA-256 hash for integrity checking
+  expected_sha256: "16320c9c1ec72448db59aa0a26a0b95401046bef5d02fd3aeb906448e3055e91"
+  
+  # Where the downloaded file will be saved locally on the user's system
+  local_save_path: "data/raw/Telco-Customer-Churn.csv"

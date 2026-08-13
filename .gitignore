@@ -26,3 +26,6 @@ src/thinking train/
 
 # Logs
 logs/
+
+# local dataset
+data/
