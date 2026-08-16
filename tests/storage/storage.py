@@ -1,5 +1,5 @@
 from pathlib import Path
-
+import pathlib
 
 def get_project_root(anchor_file: str = "requirements.txt") -> Path:
     """Returns the absolute Path object to the project root directory.
