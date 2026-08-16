@@ -1,4 +1,5 @@
 from pathlib import Path
+import pathlib
 
 def get_project_root(anchor_file: str = "requirements.txt") -> Path:
     """Returns the absolute Path object to the project root directory.
@@ -27,22 +28,34 @@ def get_project_root(anchor_file: str = "requirements.txt") -> Path:
 
 
 def ensure_dir_exists(dir_path: Path) -> Path:
-    """Guarantees that a directory path exists on disk, creating it if needed.
-    input: dir_path (Path): The path to the directory to ensure exists
+    """Guarantees that a directory path exists on disk,
+    creating it if needed.
+    
+    input: dir_path (Path): The path to the directory
+    to ensure exists
+    
     output: Path object to the directory
     """
-
-
+    # An Edge case: if the path is a file, 
+    # it will raise an error and will need 
+    # manual intervention to fix it
+    dir_path.mkdir( parents=True, exist_ok=True)
     return dir_path
 
 
 
 def get_raw_data_path(filename: str = "") -> Path:
+
     """Returns the full target Path for a file inside data/raw/, ensuring the directory exists.
     input: filename (str): The name of the file to get the path for
     output: Path object to the file
     """
 
+    raw_data_dir = ensure_dir_exists(get_project_root() / "data" / "raw")
+    # An edge case: if the filename is empty,
+    #  it will return the directory path instead of a file path
+    
+    return (raw_data_dir / filename)
 
 
-    pass
+
