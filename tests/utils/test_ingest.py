@@ -4,6 +4,7 @@
 import hashlib
 from pathlib import Path
 
+import pytest
 import requests
 import yaml
 from src.utils.ingest import load_yaml_config
@@ -24,11 +25,17 @@ def test_load_yaml_config(config_path : Path ) -> dict:
     with open(config_path, mode="r", encoding="utf-8") as file:
         config_data = yaml.safe_load(file)
 
-    return config_data or {} 
+    return config_data or {}
 
 
+def test_load_yaml_config():
+    # test case 1 for correct output
 
-def test_calculate_sha256(file_path: Path) -> str:
+    # test case 2 for different yaml files
+
+# original Function of tests
+'''
+ def test_calculate_sha256(file_path: Path) -> str:
     """
     calculates check sum sha256 for a file 
     
@@ -44,6 +51,28 @@ def test_calculate_sha256(file_path: Path) -> str:
             hasher.update(chunk)
 
     return hasher.hexdigest()
+'''
+
+def test_calculate_sha256_working(tmp_path):
+    # test case 1 correct output testing
+    file = tmp_path / "sample.txt"
+    file.write_bytes(b"test text")
+    result = calculate_sha256(file)
+    assert result == "0f46738ebed370c5c52ee0ad96dec8f459fb901c2ca4e285211eddf903bf1598"
+
+def test_calculate_sha256_empty_file(tmp_path):
+    # test case 2 empty file testing
+    file = tmp_path / "empty.txt"
+    file.write_bytes(b"")
+    result = calculate_sha256(file)
+    assert result == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+def test_calculate_sha256_no_file(tmp_path):
+    # test case 3 no file testing
+    file = tmp_path / "nothing.txt"
+    with pytest.raises(FileNotFoundError):
+        result = calculate_sha256(file)
+        # should raise error and end here
 
 
 
