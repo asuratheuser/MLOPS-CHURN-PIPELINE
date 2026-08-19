@@ -11,47 +11,55 @@ from src.utils.ingest import load_yaml_config
 from src.utils.ingest import calculate_sha256
 from src.utils.ingest import download_stream
 
-def test_load_yaml_config(config_path : Path ) -> dict:
-    """
-    Opens a YAML file and converts its content into a Python dictionary.
-    
-    Input: config_path (Path) - Path object to the .yaml file
-    Output: dict - Parsed dictionary of the YAML file
-    """
 
-    if not config_path.is_file():
-        raise FileNotFoundError(f"Config file not found: {config_path}")
+def test_load_yaml_config_success(tmp_path):
+    # Setup: Create a valid YAML file
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text("batch_size: 32\nenvironment: 'test'")
 
-    with open(config_path, mode="r", encoding="utf-8") as file:
-        config_data = yaml.safe_load(file)
+    # Execute
+    result = load_yaml_config(config_file)
 
-    return config_data or {}
+    # Assert
+    assert result == {"batch_size": 32, "environment": "test"}
 
 
-def test_load_yaml_config():
-    # test case 1 for correct output
+def test_load_yaml_config_empty_file(tmp_path):
+    # Setup: Create an empty YAML file
+    empty_file = tmp_path / "empty.yaml"
+    empty_file.write_text("")
 
-    # test case 2 for different yaml files
+    # Execute
+    result = load_yaml_config(empty_file)
 
-# original Function of tests
-'''
- def test_calculate_sha256(file_path: Path) -> str:
-    """
-    calculates check sum sha256 for a file 
-    
-    input:file path of the file you want checksum
-    output: string of checksum
-    """
+    assert result == {}
 
-    hasher = hashlib.sha256()
-    with open(file_path, mode="rb") as file:
-        chunk_size = 8192 
 
-        while chunk := file.read(chunk_size):
-            hasher.update(chunk)
+def test_load_yaml_config_missing_file(tmp_path):
+    # Setup: Non-existent path
+    missing_file = tmp_path / "non_existent_folder" / "config.yaml"
 
-    return hasher.hexdigest()
-'''
+    # Execute & Assert
+    with pytest.raises(FileNotFoundError):
+        load_yaml_config(missing_file)
+
+
+def test_load_yaml_config_invalid_syntax(tmp_path):
+    # Setup: Create malformed YAML
+    bad_yaml_file = tmp_path / "bad_syntax.yaml"
+    bad_yaml_file.write_text("key: : invalid_yaml")
+
+    # Execute & Assert
+    with pytest.raises(yaml.YAMLError):
+        load_yaml_config(bad_yaml_file)
+
+
+
+
+
+
+
+
 
 def test_calculate_sha256_working(tmp_path):
     # test case 1 correct output testing
@@ -76,28 +84,6 @@ def test_calculate_sha256_no_file(tmp_path):
 
 
 
-def test_download_stream(url: str,output_path:Path, timeout:float = 15.0 ) -> None:
-    """
-    Downloads data from a URL to output_path, streaming to avoid
-    loading the whole file into memory. Raises on HTTP errors or timeout.
-
-    input: url location of the data, ouput file path location,
-    timeout duration for every chunk read before quitting
-    output: downloaded file
-    """
-
-    temp_path = output_path.with_suffix(output_path.suffix + ".part")
 
 
-    try:
-        with requests.get(url, stream=True, timeout=timeout) as response:
-            response.raise_for_status()
-
-            with open(temp_path, mode="wb") as file:    
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        file.write(chunk)
-        temp_path.rename(output_path)
-    except Exception:
-        temp_path.unlink(missing_ok=True)
-        raise
+def test_download_stream_success()
