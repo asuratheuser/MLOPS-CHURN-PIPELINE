@@ -193,3 +193,27 @@ class TestGetRawDataPath:
         get_raw_data_path("dataset.csv")
 
         assert (tmp_path / "data" / "raw").is_dir()
+
+    @patch("src.storage.storage.get_project_root")
+    def test_get_raw_data_path_raises_on_path_traversal(self, mock_root, tmp_path):
+        mock_root.return_value = tmp_path
+
+        with pytest.raises(ValueError, match="escapes the raw data directory"):
+            get_raw_data_path("../../etc/passwd")
+
+    @patch("src.storage.storage.get_project_root")
+    def test_get_raw_data_path_raises_on_absolute_path_escape(self, mock_root, tmp_path):
+        mock_root.return_value = tmp_path
+
+        with pytest.raises(ValueError, match="escapes the raw data directory"):
+            get_raw_data_path("/etc/passwd")
+
+
+    @patch("src.storage.storage.get_project_root")
+    def test_get_raw_data_path_allows_safe_nested_filename(self, mock_root, tmp_path):
+        # sanity check the guard doesn't over-trigger on legitimate subfolder usage
+        mock_root.return_value = tmp_path
+
+        result = get_raw_data_path("subfolder/data.csv")
+
+        assert result == tmp_path / "data" / "raw" / "subfolder" / "data.csv"
