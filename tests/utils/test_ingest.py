@@ -11,6 +11,10 @@ from src.utils.ingest import calculate_sha256
 from src.utils.ingest import download_stream
 
 
+# -----------------------------------------------------------------------------
+# load_yaml
+# -----------------------------------------------------------------------------
+
 def test_load_yaml_config_success(tmp_path):
     # Setup: Create a valid YAML file
     config_file = tmp_path / "config.yaml"
@@ -53,8 +57,9 @@ def test_load_yaml_config_invalid_syntax(tmp_path):
         load_yaml_config(bad_yaml_file)
 
 
-
-
+# -----------------------------------------------------------------------------
+# calculate_sha256
+# -----------------------------------------------------------------------------
 
 def test_calculate_sha256_working(tmp_path):
     # test case 1 correct output testing
@@ -80,8 +85,9 @@ def test_calculate_sha256_no_file(tmp_path):
         # should raise error and end here
 
 
-
-
+# -----------------------------------------------------------------------------
+# download_stream
+# -----------------------------------------------------------------------------
 
 @patch("src.utils.ingest.requests.get")
 def test_download_stream_success(mock_get, tmp_path):
