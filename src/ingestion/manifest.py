@@ -7,12 +7,15 @@ tells it already happened.
 """
 
 import json
+import logging
 import uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
 from src.storage.storage import ensure_dir_exists
+
+logger = logging.getLogger(__name__)
 
 
 class UnknownRunError(Exception):
@@ -144,9 +147,21 @@ class IngestionManifest:
             ) from None
 
     def _write_entry(self, entry: dict) -> None:
-        """Appends one JSON entry as a single line to the manifest file."""
-        with open(self.output_path, mode="a", encoding="utf-8") as f:
-            f.write(json.dumps(entry) + "\n")
+        """Appends one JSON entry as a single line to the manifest file.
+
+        Raises:
+            OSError: if the write itself fails (disk full, permissions,
+                file removed out from under the process, etc.). The
+                failure is logged before re-raising so the entry's
+                content isn't lost to the void even though it never
+                made it into the manifest file.
+        """
+        try:
+            with open(self.output_path, mode="a", encoding="utf-8") as f:
+                f.write(json.dumps(entry) + "\n")
+        except OSError:
+            logger.error("Failed to write manifest entry: %s", entry)
+            raise
 
     def _now(self) -> str:
         """Current time from this manifest's clock, as an ISO 8601 string."""

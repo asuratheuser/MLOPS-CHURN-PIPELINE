@@ -199,6 +199,28 @@ class TestLogFailure:
 # Multiple runs / file behavior
 # ─────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────
+# Write failure handling
+# ─────────────────────────────────────────────────────────────────
+
+class TestWriteFailureLogging:
+
+    def test_write_failure_is_logged_and_still_raises(self, tmp_path, monkeypatch, caplog):
+        manifest = IngestionManifest(tmp_path / "manifest.jsonl")
+        run_id = manifest.start_run("https://example.com/f.zip", Path("/data/f.zip"))
+
+        def broken_open(*args, **kwargs):
+            raise OSError("No space left on device")
+
+        monkeypatch.setattr("builtins.open", broken_open)
+
+        with caplog.at_level("ERROR"):
+            with pytest.raises(OSError, match="No space left on device"):
+                manifest.log_success(run_id, sha256="abc", file_size_bytes=1)
+
+        assert "Failed to write manifest entry" in caplog.text
+
+
 class TestMultipleRuns:
 
     def test_concurrent_in_flight_runs_do_not_interfere(self, tmp_path):
