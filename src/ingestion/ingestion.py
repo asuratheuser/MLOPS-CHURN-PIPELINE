@@ -100,7 +100,10 @@ def _ingest_one_item(item: dict, manifest: IngestionManifest) -> IngestionItemRe
     url = item["url"]
     filename = item["filename"]
     expected_hash = item["expected_hash"]
-
+    
+    # BUG: this line (and the dict lookups above it) run outside the
+    # try/except below, so a bad config item or a future start_run()
+    # failure would abort the whole batch instead of just this item.
     run_id = manifest.start_run(url, Path(filename))
 
     try:
