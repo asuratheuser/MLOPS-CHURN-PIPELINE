@@ -13,7 +13,7 @@ from pathlib import Path
 
 from src.ingestion.manifest import IngestionManifest
 from src.storage.storage import get_raw_data_path
-from src.utils.ingest import calculate_sha256, download_stream, load_yaml_config
+from src.utils.ingest import calculate_sha256, download_stream
 
 logger = logging.getLogger(__name__)
 
@@ -48,13 +48,13 @@ class IngestionResult:
         return len(self.succeeded) + len(self.failed)
 
 
-def run_ingestion_stage(config_path: Path, manifest_path: Path) -> IngestionResult:
-    """Runs the full ingestion stage: downloads and verifies every
-    item listed in config_path, recording each outcome in the
+def run(config: dict, manifest_path: Path) -> IngestionResult:
+    """Runs the full ingestion stage: verifies every
+    item listed in config, recording each outcome in the
     manifest at manifest_path.
 
     Args:
-        config_path: Path to the YAML config listing items to ingest.
+        config: config dictionary listing items to ingest.
             Each item is expected to provide url, filename, and
             expected_hash.
         manifest_path: Path to the manifest JSONL file to log into.
@@ -67,9 +67,9 @@ def run_ingestion_stage(config_path: Path, manifest_path: Path) -> IngestionResu
         IngestionStageFailed: if one or more items failed or were
             corrupt. Raised only after every item has been attempted.
     """
-    config = load_yaml_config(config_path)
+    
     if "items" not in config:
-        raise ValueError(f"Config at {config_path} has no 'items' key")
+        raise ValueError(f"Config at {config} has no 'items' key")
 
     manifest = IngestionManifest(manifest_path)
 
