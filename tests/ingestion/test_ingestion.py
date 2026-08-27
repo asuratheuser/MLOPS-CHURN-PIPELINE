@@ -1,23 +1,20 @@
-"""Tests for src.ingestion.ingestion: run_ingestion_stage."""
+"""Tests for src.ingestion.ingestion: run."""
 
 import json
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-import yaml
 
 from src.ingestion.ingestion import (
     IngestionStageFailed,
-    run_ingestion_stage,
+    run,
 )
 from src.ingestion.manifest import IngestionManifest
 
 
-def write_config(tmp_path: Path, items: list[dict]) -> Path:
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(yaml.dump({"items": items}))
-    return config_path
+def make_config(items: list[dict]) -> dict:
+    return {"items": items}
 
 
 def read_manifest_entries(manifest_path: Path) -> list[dict]:
@@ -40,26 +37,18 @@ def make_item(name: str, expected_hash: str = "MATCH") -> dict:
 
 class TestConfigHandling:
 
-    def test_raises_file_not_found_for_missing_config(self, tmp_path):
-        missing_config = tmp_path / "does_not_exist.yaml"
-        manifest_path = tmp_path / "manifest.jsonl"
-
-        with pytest.raises(FileNotFoundError):
-            run_ingestion_stage(missing_config, manifest_path)
-
     def test_raises_value_error_when_items_key_missing(self, tmp_path):
-        config_path = tmp_path / "config.yaml"
-        config_path.write_text(yaml.dump({"not_items": []}))
+        config = {"not_items": []}
         manifest_path = tmp_path / "manifest.jsonl"
 
         with pytest.raises(ValueError, match="items"):
-            run_ingestion_stage(config_path, manifest_path)
+            run(config, manifest_path)
 
     def test_empty_items_list_succeeds_with_no_entries(self, tmp_path):
-        config_path = write_config(tmp_path, items=[])
+        config = make_config(items=[])
         manifest_path = tmp_path / "manifest.jsonl"
 
-        result = run_ingestion_stage(config_path, manifest_path)
+        result = run(config, manifest_path)
 
         assert result.total == 0
         assert result.succeeded == []
@@ -83,10 +72,10 @@ class TestSingleItemOutcomes:
         mock_path.return_value = output_file
         mock_hash.return_value = "MATCH"
 
-        config_path = write_config(tmp_path, items=[make_item("data.zip", "MATCH")])
+        config = make_config(items=[make_item("data.zip", "MATCH")])
         manifest_path = tmp_path / "manifest.jsonl"
 
-        result = run_ingestion_stage(config_path, manifest_path)
+        result = run(config, manifest_path)
 
         assert len(result.succeeded) == 1
         assert result.failed == []
@@ -108,11 +97,11 @@ class TestSingleItemOutcomes:
         mock_path.return_value = output_file
         mock_hash.return_value = "ACTUAL_HASH"
 
-        config_path = write_config(tmp_path, items=[make_item("data.zip", "EXPECTED_HASH")])
+        config = make_config(items=[make_item("data.zip", "EXPECTED_HASH")])
         manifest_path = tmp_path / "manifest.jsonl"
 
         with pytest.raises(IngestionStageFailed, match="1 of 1"):
-            run_ingestion_stage(config_path, manifest_path)
+            run(config, manifest_path)
 
         entries = read_manifest_entries(manifest_path)
         assert entries[0]["status"] == "corrupt"
@@ -128,11 +117,11 @@ class TestSingleItemOutcomes:
         mock_path.return_value = output_file
         mock_download.side_effect = ConnectionError("network unreachable")
 
-        config_path = write_config(tmp_path, items=[make_item("data.zip")])
+        config = make_config(items=[make_item("data.zip")])
         manifest_path = tmp_path / "manifest.jsonl"
 
         with pytest.raises(IngestionStageFailed, match="1 of 1"):
-            run_ingestion_stage(config_path, manifest_path)
+            run(config, manifest_path)
 
         entries = read_manifest_entries(manifest_path)
         assert entries[0]["status"] == "failed"
@@ -145,11 +134,11 @@ class TestSingleItemOutcomes:
         # the whole batch
         mock_path.side_effect = ValueError("filename escapes the raw data directory")
 
-        config_path = write_config(tmp_path, items=[make_item("../../etc/passwd")])
+        config = make_config(items=[make_item("../../etc/passwd")])
         manifest_path = tmp_path / "manifest.jsonl"
 
         with pytest.raises(IngestionStageFailed, match="1 of 1"):
-            run_ingestion_stage(config_path, manifest_path)
+            run(config, manifest_path)
 
         entries = read_manifest_entries(manifest_path)
         assert len(entries) == 1
@@ -184,11 +173,11 @@ class TestBatchIsolation:
         mock_download.side_effect = fake_download
 
         items = [make_item("good1.zip"), make_item("bad.zip"), make_item("good2.zip")]
-        config_path = write_config(tmp_path, items=items)
+        config = make_config(items=items)
         manifest_path = tmp_path / "manifest.jsonl"
 
         with pytest.raises(IngestionStageFailed, match="1 of 3"):
-            run_ingestion_stage(config_path, manifest_path)
+            run(config, manifest_path)
 
         assert mock_download.call_count == 3  # all three were attempted
         entries = read_manifest_entries(manifest_path)
@@ -213,10 +202,10 @@ class TestBatchIsolation:
         mock_hash.return_value = "MATCH"
 
         items = [make_item("a.zip"), make_item("b.zip")]
-        config_path = write_config(tmp_path, items=items)
+        config = make_config(items=items)
         manifest_path = tmp_path / "manifest.jsonl"
 
-        result = run_ingestion_stage(config_path, manifest_path)  # must not raise
+        result = run(config, manifest_path)  # must not raise
 
         assert len(result.succeeded) == 2
         assert result.failed == []
@@ -237,7 +226,7 @@ class TestManifestLoggingFailureFallback:
         mock_path.return_value = output_file
         mock_download.side_effect = ConnectionError("network unreachable")
 
-        config_path = write_config(tmp_path, items=[make_item("data.zip")])
+        config = make_config(items=[make_item("data.zip")])
         manifest_path = tmp_path / "manifest.jsonl"
 
         with patch.object(
@@ -245,7 +234,7 @@ class TestManifestLoggingFailureFallback:
         ):
             with caplog.at_level("CRITICAL"):
                 with pytest.raises(IngestionStageFailed):
-                    run_ingestion_stage(config_path, manifest_path)
+                    run(config, manifest_path)
 
         # the original ConnectionError must not leak out in place of
         # IngestionStageFailed, and the failure must still be visible
