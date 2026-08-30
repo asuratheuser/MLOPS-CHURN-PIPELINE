@@ -19,6 +19,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
+from typing import TypeVar
+
+T = TypeVar("T", bound="StageResult")
 
 
 class StageStatus(str, Enum):
@@ -94,7 +97,7 @@ class _OpenStage:
     started_at_dt: datetime
     clock: Callable[[], datetime] | None = None
 
-    def finish(self, result_cls: type, status: StageStatus, **fields) -> "StageResult":
+    def finish(self, result_cls: type[T], status: StageStatus, **fields) -> T:
         """Finalizes a stage run, producing a populated result instance.
 
         Args:
@@ -117,7 +120,17 @@ class _OpenStage:
             logic isn't duplicated at each one.
         """
         completed_at_dt = _resolve_clock(self.clock)
-        duration_seconds = (completed_at_dt - self.started_at_dt).total_seconds()
+        raw_duration = (completed_at_dt - self.started_at_dt).total_seconds()
+        # Clamp to zero rather than propagate a negative duration. A
+        # negative value can only happen from real clock skew (e.g. an
+        # NTP correction mid-run) or a misused injected clock — neither
+        # represents real elapsed time, and a negative number would
+        # corrupt any downstream monitoring/dashboard built on this
+        # field. Zero ("effectively instantaneous") is the least
+        # surprising fallback; raising here would crash an otherwise
+        # successful stage over an infrastructure artifact, which is a
+        # worse outcome than reporting 0 seconds.
+        duration_seconds = max(0.0, raw_duration)
 
         return result_cls(
             stage_name=self.stage_name,
@@ -173,24 +186,6 @@ def _read_header_and_count_csv(path: Path) -> tuple[list[str], int]:
         return header, row_count
 
 
-def _read_header_and_count_parquet(path: Path) -> tuple[list[str], int]:
-    """Returns (column_names, row_count) for a Parquet file using
-    pyarrow's metadata, which avoids loading actual row data into
-    memory just to count rows or read column names.
-
-    Raises:
-        ImportError: if pyarrow isn't installed. Not caught here —
-            pyarrow is only imported when a .parquet file is actually
-            being read, so projects that never touch Parquet don't
-            need it installed at all.
-    """
-    import pyarrow.parquet as pq
-
-    parquet_file = pq.ParquetFile(path)
-    schema = parquet_file.schema_arrow
-    return list(schema.names), parquet_file.metadata.num_rows
-
-
 def compute_schema_hash(column_names: list[str]) -> str:
     """Fingerprints a dataset's schema as a stable SHA-256 hex digest.
 
@@ -200,12 +195,10 @@ def compute_schema_hash(column_names: list[str]) -> str:
 
     Raises:
         TypeError: if column_names contains a mix of types that can't
-            be sorted together (e.g. str and int). Both supported
-            readers (_read_header_and_count_csv,
-            _read_header_and_count_parquet) always produce all-string
-            column name lists, so this is only reachable if
-            compute_schema_hash is called directly with malformed
-            input.
+            be sorted together (e.g. str and int). _read_header_and_count_csv
+            always produces an all-string column name list, so this is
+            only reachable if compute_schema_hash is called directly
+            with malformed input.
     """
     canonical = json.dumps(sorted(column_names))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -214,29 +207,32 @@ def compute_schema_hash(column_names: list[str]) -> str:
 def build_dataset_ref(path: Path, clock: Callable[[], datetime] | None = None) -> DatasetRef:
     """Builds a DatasetRef for a dataset a stage just produced.
 
-    Supports .csv and .parquet based on the file's suffix (matched
-    case-insensitively). Any stage producing a dataset for a downstream
-    stage should build its DatasetRef through this function rather than
-    computing row_count/schema_hash independently, so every stage
-    fingerprints schemas the same way and comparisons between them stay
-    meaningful.
+    Supports .csv, matched case-insensitively on the file's suffix.
+    Any stage producing a dataset for a downstream stage should build
+    its DatasetRef through this function rather than computing
+    row_count/schema_hash independently, so every stage fingerprints
+    schemas the same way and comparisons between them stay meaningful.
+
+    Only .csv is supported today — no other format is currently
+    produced or consumed anywhere in this pipeline. Add a new format
+    here only once a real stage actually needs to write one.
 
     Raises:
         ValueError: if path's extension isn't a supported format
             (including no extension at all).
         FileNotFoundError: if path doesn't exist on disk.
-        IsADirectoryError: if path points at a directory, not a file.
-        ImportError: if path is .parquet and pyarrow isn't installed.
+        IsADirectoryError: if path points at a directory, not a file
+            (on some platforms this may surface as PermissionError
+            instead — this is an OS-level inconsistency, not something
+            this function controls).
     """
     suffix = path.suffix.lower()
     if suffix == ".csv":
         column_names, row_count = _read_header_and_count_csv(path)
-    elif suffix == ".parquet":
-        column_names, row_count = _read_header_and_count_parquet(path)
     else:
         raise ValueError(
             f"Unsupported dataset format {suffix!r} for {path}. "
-            "build_dataset_ref currently supports .csv and .parquet."
+            "build_dataset_ref currently supports .csv."
         )
 
     return DatasetRef(
