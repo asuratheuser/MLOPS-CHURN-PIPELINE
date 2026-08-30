@@ -11,6 +11,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from src.core.types import StageResult, StageStatus
 from src.ingestion.manifest import IngestionManifest
 from src.storage.storage import get_raw_data_path
 from src.utils.ingest import calculate_sha256, download_stream
@@ -22,7 +23,18 @@ class IngestionStageFailed(Exception):
     """Raised after a full ingestion run if one or more items failed
     or came back corrupt. Individual failures are already recorded in
     the manifest — this exception is only the batch-level signal that
-    something in the run needs attention."""
+    something in the run needs attention.
+
+    Carries the finalized IngestionResult (result), so a caller that
+    catches this exception can still inspect stage_name,
+    duration_seconds, and exactly which items succeeded vs. failed —
+    the same information that would have been available had the run
+    succeeded outright.
+    """
+
+    def __init__(self, message: str, result: "IngestionResult"):
+        super().__init__(message)
+        self.result = result
 
 
 @dataclass
@@ -37,7 +49,7 @@ class IngestionItemResult:
 
 
 @dataclass
-class IngestionResult:
+class IngestionResult(StageResult):
     """The outcome of one full ingestion stage run."""
 
     succeeded: list[IngestionItemResult] = field(default_factory=list)
@@ -64,27 +76,44 @@ def run(config: dict, manifest_path: Path) -> IngestionResult:
         which failed or came back corrupt.
 
     Raises:
+        ValueError: if config has no "items" key. Raised before any
+            timing/stage-result machinery starts, since this is a
+            precondition failure, not a failed stage attempt — no
+            ingestion work was ever tried.
         IngestionStageFailed: if one or more items failed or were
-            corrupt. Raised only after every item has been attempted.
+            corrupt. Raised only after every item has been attempted,
+            and carries the finalized IngestionResult via .result.
     """
-    
     if "items" not in config:
         raise ValueError(f"Config at {config} has no 'items' key")
 
+    # Timing starts only now — after we know there's a legitimate
+    # batch to actually attempt, not before input validation.
+    open_stage = StageResult.start("ingestion")
+
     manifest = IngestionManifest(manifest_path)
 
-    result = IngestionResult()
+    succeeded: list[IngestionItemResult] = []
+    failed: list[IngestionItemResult] = []
 
     for item in config["items"]:
         item_result = _ingest_one_item(item, manifest)
         if item_result.status == "verified":
-            result.succeeded.append(item_result)
+            succeeded.append(item_result)
         else:
-            result.failed.append(item_result)
+            failed.append(item_result)
+
+    result = open_stage.finish(
+        IngestionResult,
+        StageStatus.FAILED if failed else StageStatus.SUCCESS,
+        succeeded=succeeded,
+        failed=failed,
+    )
 
     if result.failed:
         raise IngestionStageFailed(
-            f"{len(result.failed)} of {result.total} item(s) failed or were corrupt"
+            f"{len(result.failed)} of {result.total} item(s) failed or were corrupt",
+            result=result,
         )
 
     return result
@@ -100,7 +129,7 @@ def _ingest_one_item(item: dict, manifest: IngestionManifest) -> IngestionItemRe
     url = item["url"]
     filename = item["filename"]
     expected_hash = item["expected_hash"]
-    
+
     # BUG: this line (and the dict lookups above it) run outside the
     # try/except below, so a bad config item or a future start_run()
     # failure would abort the whole batch instead of just this item.
