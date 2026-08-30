@@ -125,23 +125,37 @@ def _ingest_one_item(item: dict, manifest: IngestionManifest) -> IngestionItemRe
     failure is caught, logged to the manifest, and reflected in the
     returned IngestionItemResult instead, so one bad item cannot
     abort the rest of the batch.
-    """
-    url = item["url"]
-    filename = item["filename"]
-    expected_hash = item["expected_hash"]
 
-    # BUG: this line (and the dict lookups above it) run outside the
-    # try/except below, so a bad config item or a future start_run()
-    # failure would abort the whole batch instead of just this item.
-    run_id = manifest.start_run(url, Path(filename))
+    This includes malformed items (missing url/filename/expected_hash)
+    — those are now caught here too, not just failures during
+    download/hash/verify, since the required-key lookups and
+    manifest.start_run() happen inside the same try block as
+    everything else.
+    """
+    # run_id may never get assigned if the item itself is malformed
+    # (missing a required key) or if start_run fails before a real
+    # attempt begins — initialized here so the except block below can
+    # tell whether a manifest entry was ever opened at all.
+    run_id: str | None = None
 
     try:
+        url = item["url"]
+        filename = item["filename"]
+        expected_hash = item["expected_hash"]
+
+        run_id = manifest.start_run(url, Path(filename))
+
         output_path = get_raw_data_path(filename)
         download_stream(url, output_path)
         actual_hash = calculate_sha256(output_path)
         file_size_bytes = output_path.stat().st_size
 
-        if actual_hash == expected_hash:
+        # Compared case-insensitively: hex digests have no case-sensitive
+        # meaning (hashlib.hexdigest() always returns lowercase, but a
+        # config author may reasonably write an uppercase expected_hash).
+        # Without normalizing, an otherwise-correct file would be
+        # falsely marked corrupt purely due to letter casing.
+        if actual_hash.lower() == expected_hash.lower():
             manifest.log_success(run_id, actual_hash, file_size_bytes)
             return IngestionItemResult(
                 filename=filename, url=url, run_id=run_id, status="verified"
@@ -154,22 +168,38 @@ def _ingest_one_item(item: dict, manifest: IngestionManifest) -> IngestionItemRe
 
     except Exception as e:
         error_message = str(e)
-        try:
-            manifest.log_failure(run_id, error_message)
-        except Exception:
-            # Logging the failure itself failed (e.g. disk full). Don't
-            # let that mask the original error or crash the batch —
-            # fall back to plain logging so it's still visible somewhere.
-            logger.critical(
-                "Failed to record manifest entry for run_id=%s (original error: %s)",
-                run_id,
+
+        if run_id is not None:
+            try:
+                manifest.log_failure(run_id, error_message)
+            except Exception:
+                # Logging the failure itself failed (e.g. disk full). Don't
+                # let that mask the original error or crash the batch —
+                # fall back to plain logging so it's still visible somewhere.
+                logger.critical(
+                    "Failed to record manifest entry for run_id=%s (original error: %s)",
+                    run_id,
+                    error_message,
+                    exc_info=True,
+                )
+        else:
+            # No run was ever started (the item failed before or during
+            # manifest.start_run — e.g. a missing required key), so
+            # there's no manifest entry to attach this failure to.
+            logger.error(
+                "Item failed before a run could be started (original error: %s)",
                 error_message,
-                exc_info=True,
             )
+
+        # item may not even be a dict at this point (e.g. config["items"]
+        # was itself malformed, like a dict instead of a list, making
+        # each "item" a plain string) — guard the fallback lookup so
+        # building this failure result can never itself raise.
+        safe_get = item.get if isinstance(item, dict) else (lambda _key, default: default)
         return IngestionItemResult(
-            filename=filename,
-            url=url,
-            run_id=run_id,
+            filename=safe_get("filename", "<unknown>"),
+            url=safe_get("url", "<unknown>"),
+            run_id=run_id or "unset",
             status="failed",
             error=error_message,
         )
