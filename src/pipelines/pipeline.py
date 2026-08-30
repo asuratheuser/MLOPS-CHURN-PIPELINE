@@ -22,22 +22,3 @@ run_pipeline(config):
 
 
 """
-from src.ingestion.ingestion import run_ingestion_stage, IngestionStageFailed
-
-def get_required(config: dict, key: str):
-    if key not in config:
-        raise ValueError(f"Missing required config key: {key!r}")
-    return config[key]
-
-primary_url
-def run_pipeline(config_path: Path, ):
-    #Extacting config from config_path
-    
-    value_primary_url = get_required(config, "primary_url")
-    
-    value_backup_url = get_required(config, "backup_url")
-    #calling run_ingestion_stage
-
-    #make sure ingestionstagefailed error propagates
-
-    #returning ingestionResult to main
