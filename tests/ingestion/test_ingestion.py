@@ -55,15 +55,21 @@ class TestConfigHandling:
         assert result.succeeded == []
         assert result.failed == []
 
-    def test_items_that_is_not_a_list_raises_type_error(self, tmp_path):
-        # config["items"] is a dict instead of a list — iterating yields
-        # its keys (strings), and item["url"] on a string then raises
-        # TypeError rather than anything ingestion-specific. This isn't
-        # caught or converted anywhere, so it should surface as-is.
+    def test_items_that_is_not_a_list_is_now_absorbed_as_a_per_item_failure(self, tmp_path):
+        # BEHAVIOR CHANGE from the _ingest_one_item try-block fix: config
+        # ["items"] being a dict (not a list) means iterating over it
+        # yields its keys as plain strings. item["url"] on a string now
+        # raises TypeError INSIDE _ingest_one_item's try block, so it's
+        # caught like any other per-item failure instead of crashing the
+        # whole run. This is a real design fork worth revisiting — should
+        # a malformed items *structure* fail like a missing "items" key
+        # (a precondition error, before any stage work starts), or like
+        # this (a per-item failure)? Currently it's the latter; this test
+        # locks in that choice until it's deliberately revisited.
         config = make_config(items={"not": "a list"})
         manifest_path = tmp_path / "manifest.jsonl"
 
-        with pytest.raises(TypeError):
+        with pytest.raises(IngestionStageFailed, match="1 of 1"):
             run(config, manifest_path)
 
 
@@ -145,19 +151,12 @@ class TestSingleItemOutcomes:
     @patch("src.ingestion.ingestion.get_raw_data_path")
     @patch("src.ingestion.ingestion.calculate_sha256")
     @patch("src.ingestion.ingestion.download_stream")
-    def test_hash_match_with_different_case_is_treated_as_corrupt(
+    def test_hash_match_with_different_case_is_treated_as_verified(
         self, mock_download, mock_hash, mock_path, tmp_path
     ):
-        # CHARACTERIZATION TEST — documents current behavior, not a
-        # guarantee it's correct. actual_hash/expected_hash are compared
-        # with a plain "==", so a hash that matches except for letter
-        # case is treated as a mismatch (marked corrupt) even though the
-        # underlying file content is identical. This is a real gap: hex
-        # digests are conventionally case-insensitive, and a config
-        # author writing an uppercase hash would see every otherwise-
-        # good file rejected as "corrupt". Flagging here rather than
-        # silently fixing it, since the fix belongs in ingestion.py, not
-        # in this test file.
+        # FIX VERIFICATION: actual_hash/expected_hash are now compared
+        # case-insensitively. A hash that matches except for letter case
+        # should be treated as a genuine match, not corruption.
         output_file = tmp_path / "data.zip"
         output_file.write_bytes(b"real content")
         mock_path.return_value = output_file
@@ -166,11 +165,11 @@ class TestSingleItemOutcomes:
         config = make_config(items=[make_item("data.zip", "ABCDEF0123")])
         manifest_path = tmp_path / "manifest.jsonl"
 
-        with pytest.raises(IngestionStageFailed):
-            run(config, manifest_path)
+        result = run(config, manifest_path)  # must not raise
 
+        assert result.succeeded[0].status == "verified"
         entries = read_manifest_entries(manifest_path)
-        assert entries[0]["status"] == "corrupt"
+        assert entries[0]["status"] == "verified"
 
     @patch("src.ingestion.ingestion.get_raw_data_path")
     @patch("src.ingestion.ingestion.download_stream")
@@ -198,10 +197,8 @@ class TestSingleItemOutcomes:
     ):
         # download_stream is mocked to a no-op, so output_path is never
         # actually created. calculate_sha256 (unmocked here) then tries
-        # to open a file that doesn't exist — this is a real path
-        # calculate_sha256 can hit if a download silently produces no
-        # file, and it's caught by _ingest_one_item's broad except,
-        # same as any other per-item failure.
+        # to open a file that doesn't exist — caught by _ingest_one_item's
+        # broad except, same as any other per-item failure.
         output_file = tmp_path / "data.zip"  # never created
         mock_path.return_value = output_file
         mock_download.return_value = None
@@ -233,29 +230,57 @@ class TestSingleItemOutcomes:
         assert entries[0]["status"] == "failed"
         assert "escapes the raw data directory" in entries[0]["error"]
 
-    def test_malformed_item_missing_required_key_raises_uncaught_key_error(self, tmp_path):
-        # BUG CHARACTERIZATION: url/filename/expected_hash lookups and
-        # manifest.start_run() in _ingest_one_item happen OUTSIDE its own
-        # try/except. A single malformed item (missing a required key)
-        # therefore raises KeyError straight out of the loop in run(),
-        # aborting the entire batch — no IngestionResult is ever
-        # produced, and no other items in the batch get attempted. This
-        # directly contradicts the module's own stated contract ("one
-        # bad item does not abort the batch"). This test exists to make
-        # that gap visible and failing loudly, not to endorse it — see
-        # the BUG comment in _ingest_one_item.
+    def test_malformed_item_missing_required_key_is_treated_as_item_failure(self, tmp_path):
+        # FIX VERIFICATION: url/filename/expected_hash lookups and
+        # manifest.start_run() now happen INSIDE _ingest_one_item's try
+        # block. A malformed item (missing a required key) is now caught
+        # like any other per-item failure — it no longer aborts the whole
+        # batch. run_id falls back to "unset" since no manifest run was
+        # ever started for this item.
         malformed_item = {"url": "https://example.com/data.zip", "filename": "data.zip"}
         # missing "expected_hash"
 
         config = make_config(items=[malformed_item])
         manifest_path = tmp_path / "manifest.jsonl"
 
-        with pytest.raises(KeyError):
+        with pytest.raises(IngestionStageFailed, match="1 of 1"):
             run(config, manifest_path)
 
-        # nothing was ever written to the manifest — the batch aborted
-        # before any per-item outcome could be recorded
+        # nothing was written to the manifest for this item, since no
+        # run was ever started — but the batch itself completed and
+        # produced a normal IngestionStageFailed, not an uncaught KeyError
         assert read_manifest_entries(manifest_path) == []
+
+    def test_malformed_item_does_not_abort_other_items_in_the_batch(self, tmp_path):
+        # The real point of the fix: one malformed item must not stop
+        # other, well-formed items in the same batch from being
+        # attempted.
+        malformed_item = {"url": "https://example.com/data.zip", "filename": "data.zip"}
+
+        with (
+            patch("src.ingestion.ingestion.get_raw_data_path") as mock_path,
+            patch("src.ingestion.ingestion.calculate_sha256") as mock_hash,
+            patch("src.ingestion.ingestion.download_stream"),
+        ):
+            def fake_path(filename):
+                path = tmp_path / filename
+                path.write_bytes(b"content")
+                return path
+
+            mock_path.side_effect = fake_path
+            mock_hash.return_value = "MATCH"
+
+            config = make_config(items=[malformed_item, make_item("good.zip")])
+            manifest_path = tmp_path / "manifest.jsonl"
+
+            with pytest.raises(IngestionStageFailed, match="1 of 2"):
+                run(config, manifest_path)
+
+        entries = read_manifest_entries(manifest_path)
+        # only the well-formed item ever got far enough to start a run
+        # and be logged — the malformed one has no manifest entry
+        assert len(entries) == 1
+        assert entries[0]["status"] == "verified"
 
 
 # ─────────────────────────────────────────────────────────────────
