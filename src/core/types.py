@@ -11,10 +11,11 @@ a schema fingerprint) that a downstream stage can sanity-check what it
 received before doing real work with it.
 """
 
+import csv
 import hashlib
 import json
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -27,6 +28,17 @@ class StageStatus(str, Enum):
     FAILED = "failed"
 
 
+def _resolve_clock(clock: Callable[[], datetime] | None) -> datetime:
+    """Returns the current time from `clock` if given, else real UTC now.
+
+    The single place this decision is made — every other function in
+    this module that needs "now" (with or without an injected clock)
+    calls this instead of repeating the same fallback inline.
+    """
+    active_clock = clock or (lambda: datetime.now(timezone.utc))
+    return active_clock()
+
+
 def _now(clock: Callable[[], datetime] | None = None) -> str:
     """Current UTC time as an ISO 8601 string.
 
@@ -35,8 +47,7 @@ def _now(clock: Callable[[], datetime] | None = None) -> str:
     and so callers can inject a fake clock in tests instead of asserting
     against real wall-clock time.
     """
-    active_clock = clock or (lambda: datetime.now(timezone.utc))
-    return active_clock().isoformat()
+    return _resolve_clock(clock).isoformat()
 
 
 @dataclass
@@ -65,7 +76,11 @@ class StageResult:
         in consistently. This keeps every stage from re-implementing the
         same "compute elapsed time, set status" logic independently.
         """
-        return _OpenStage(stage_name=stage_name, clock=clock, started_at_dt=(clock or (lambda: datetime.now(timezone.utc)))())
+        return _OpenStage(
+            stage_name=stage_name,
+            clock=clock,
+            started_at_dt=_resolve_clock(clock),
+        )
 
 
 @dataclass
@@ -89,7 +104,11 @@ class _OpenStage:
                 stage-specific fields are passed via **fields.
             status: StageStatus.SUCCESS or StageStatus.FAILED.
             **fields: The stage-specific fields for result_cls (e.g.
-                succeeded=..., failed=... for IngestionResult).
+                succeeded=..., failed=... for IngestionResult). Must
+                not include any of the base StageResult field names —
+                passing e.g. stage_name= here raises TypeError, since
+                it would collide with the value this method already
+                supplies from the open stage.
 
         Returns:
             A populated instance of result_cls, ready to return (on
@@ -97,7 +116,7 @@ class _OpenStage:
             failure) — call this at both exit points so timing/status
             logic isn't duplicated at each one.
         """
-        completed_at_dt = (self.clock or (lambda: datetime.now(timezone.utc)))()
+        completed_at_dt = _resolve_clock(self.clock)
         duration_seconds = (completed_at_dt - self.started_at_dt).total_seconds()
 
         return result_cls(
@@ -120,6 +139,12 @@ class DatasetRef:
     zero-row dataset, or a schema fingerprint that doesn't match what
     it was told to expect) without re-reading the whole file just to
     find out something upstream silently went wrong.
+
+    NOTE: unlike get_raw_data_path (storage.py), build_dataset_ref
+    performs no path validation/sandboxing — it will read from any
+    path it's given. Acceptable today since paths are produced
+    internally by trusted stage code, not directly from user input;
+    worth revisiting if that ever changes.
     """
 
     path: Path
@@ -130,10 +155,15 @@ class DatasetRef:
 
 def _read_header_and_count_csv(path: Path) -> tuple[list[str], int]:
     """Returns (column_names, row_count) for a CSV file, counting rows
-    by streaming rather than loading the whole file into memory."""
-    with open(path, mode="r", encoding="utf-8", newline="") as f:
-        import csv
+    by streaming rather than loading the whole file into memory.
 
+    A blank trailing line in the file is counted as one row, since
+    csv.reader yields an empty list for it like any other row — this
+    is a known quirk, not corrected here, since "trailing newline" vs.
+    "trailing blank row" isn't reliably distinguishable from the reader
+    alone without inspecting raw bytes.
+    """
+    with open(path, mode="r", encoding="utf-8", newline="") as f:
         reader = csv.reader(f)
         try:
             header = next(reader)
@@ -146,7 +176,14 @@ def _read_header_and_count_csv(path: Path) -> tuple[list[str], int]:
 def _read_header_and_count_parquet(path: Path) -> tuple[list[str], int]:
     """Returns (column_names, row_count) for a Parquet file using
     pyarrow's metadata, which avoids loading actual row data into
-    memory just to count rows or read column names."""
+    memory just to count rows or read column names.
+
+    Raises:
+        ImportError: if pyarrow isn't installed. Not caught here —
+            pyarrow is only imported when a .parquet file is actually
+            being read, so projects that never touch Parquet don't
+            need it installed at all.
+    """
     import pyarrow.parquet as pq
 
     parquet_file = pq.ParquetFile(path)
@@ -160,6 +197,15 @@ def compute_schema_hash(column_names: list[str]) -> str:
     Column names are sorted before hashing so two datasets with the
     same columns in a different order still produce the same hash —
     schema identity shouldn't depend on column order.
+
+    Raises:
+        TypeError: if column_names contains a mix of types that can't
+            be sorted together (e.g. str and int). Both supported
+            readers (_read_header_and_count_csv,
+            _read_header_and_count_parquet) always produce all-string
+            column name lists, so this is only reachable if
+            compute_schema_hash is called directly with malformed
+            input.
     """
     canonical = json.dumps(sorted(column_names))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -168,14 +214,19 @@ def compute_schema_hash(column_names: list[str]) -> str:
 def build_dataset_ref(path: Path, clock: Callable[[], datetime] | None = None) -> DatasetRef:
     """Builds a DatasetRef for a dataset a stage just produced.
 
-    Supports .csv and .parquet based on the file's suffix. Any stage
-    producing a dataset for a downstream stage should build its
-    DatasetRef through this function rather than computing row_count/
-    schema_hash independently, so every stage fingerprints schemas the
-    same way and comparisons between them stay meaningful.
+    Supports .csv and .parquet based on the file's suffix (matched
+    case-insensitively). Any stage producing a dataset for a downstream
+    stage should build its DatasetRef through this function rather than
+    computing row_count/schema_hash independently, so every stage
+    fingerprints schemas the same way and comparisons between them stay
+    meaningful.
 
     Raises:
-        ValueError: if path's extension isn't a supported format.
+        ValueError: if path's extension isn't a supported format
+            (including no extension at all).
+        FileNotFoundError: if path doesn't exist on disk.
+        IsADirectoryError: if path points at a directory, not a file.
+        ImportError: if path is .parquet and pyarrow isn't installed.
     """
     suffix = path.suffix.lower()
     if suffix == ".csv":

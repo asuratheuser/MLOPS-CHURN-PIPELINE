@@ -1,7 +1,7 @@
 """Tests for src.core.types: StageResult, DatasetRef, and their helpers."""
 
 import csv
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -103,6 +103,51 @@ class TestStageResultTiming:
         assert result.duration_seconds >= 0
         assert result.stage_name == "ingestion"
 
+    def test_clock_going_backward_produces_negative_duration(self):
+        # VULNERABILITY CHARACTERIZATION: finish() has no guard against
+        # completed_at being earlier than started_at. This is reachable
+        # in practice if the real system clock is adjusted backward
+        # mid-run (NTP correction, manual clock change), not just from a
+        # misused test clock. This test documents that finish() does NOT
+        # protect against it today — it silently accepts and returns a
+        # negative duration_seconds rather than raising or clamping to
+        # zero. Flagged here rather than fixed, since deciding whether to
+        # raise, clamp, or leave as-is is a design call, not a test-file
+        # decision.
+        t0 = datetime(2026, 1, 1, 12, 0, 5, tzinfo=timezone.utc)
+        t1 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)  # earlier than t0
+        clock = fake_clock([t0, t1])
+
+        open_stage = StageResult.start("ingestion", clock=clock)
+        result = open_stage.finish(FakeStageResult, StageStatus.SUCCESS)
+
+        assert result.duration_seconds < 0
+
+    def test_finish_field_colliding_with_base_field_name_raises_type_error(self):
+        # Passing a field via **fields that collides with one of
+        # StageResult's own base fields (e.g. stage_name) raises
+        # TypeError, since finish() already supplies stage_name
+        # explicitly — this documents that collision is a hard error,
+        # not silently overwritten.
+        open_stage = StageResult.start("ingestion")
+
+        with pytest.raises(TypeError):
+            open_stage.finish(FakeStageResult, StageStatus.SUCCESS, stage_name="collision")
+
+    def test_finish_missing_required_subclass_field_raises_type_error(self):
+        # FakeStageResult's items_processed has a default (=0), so this
+        # specific subclass can't demonstrate a missing-required-field
+        # error via its own fields. Using a subclass with a field that
+        # has no default confirms finish() doesn't silently supply one.
+        @dataclass
+        class StrictFakeResult(StageResult):
+            required_field: int  # no default
+
+        open_stage = StageResult.start("ingestion")
+
+        with pytest.raises(TypeError):
+            open_stage.finish(StrictFakeResult, StageStatus.SUCCESS)  # required_field omitted
+
 
 # ─────────────────────────────────────────────────────────────────
 # compute_schema_hash
@@ -123,6 +168,23 @@ class TestComputeSchemaHash:
         result = compute_schema_hash([])
         assert isinstance(result, str)
         assert len(result) == 64  # sha256 hex digest length
+
+    def test_duplicate_column_names_are_hashed_as_is(self):
+        # Not deduplicated — two columns named "a" produce a different
+        # hash than a single "a", which is arguably correct (a schema
+        # with a genuine duplicate column IS a different schema), but
+        # was previously untested.
+        assert compute_schema_hash(["a", "a", "b"]) != compute_schema_hash(["a", "b"])
+
+    def test_mixed_type_column_names_raises_type_error(self):
+        # EDGE CASE: sorted() on a mixed-type list (str and int here)
+        # raises TypeError. Both real readers always produce all-string
+        # column names, so this is only reachable via direct/malformed
+        # calls to compute_schema_hash — documented, not fixed, since
+        # the function's contract (per its docstring) assumes a list of
+        # strings.
+        with pytest.raises(TypeError):
+            compute_schema_hash(["a", 1, "b"])
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -181,6 +243,42 @@ class TestBuildDatasetRefCsv:
 
         assert ref.created_at == t0.isoformat()
 
+    def test_uppercase_extension_is_treated_as_csv(self, tmp_path):
+        path = tmp_path / "DATA.CSV"
+        write_csv(path, columns=["id"], rows=[["1"], ["2"]])
+
+        ref = build_dataset_ref(path)
+
+        assert ref.row_count == 2
+
+    def test_trailing_blank_line_inflates_row_count_by_one(self, tmp_path):
+        # VULNERABILITY CHARACTERIZATION: a manually-written file with a
+        # trailing blank line after the last real row. csv.reader yields
+        # an empty [] for that blank line, and _read_header_and_count_csv
+        # counts it like any other row. This documents the known quirk
+        # noted in the function's docstring rather than silently hiding
+        # it — a caller relying on exact row_count should be aware a
+        # trailing blank line skews the count by +1.
+        path = tmp_path / "data.csv"
+        path.write_text("id,value\n1,a\n2,b\n\n")  # note trailing blank line
+
+        ref = build_dataset_ref(path)
+
+        assert ref.row_count == 3  # 2 real rows + 1 blank line miscounted
+
+    def test_missing_file_raises_file_not_found_error(self, tmp_path):
+        path = tmp_path / "does_not_exist.csv"
+
+        with pytest.raises(FileNotFoundError):
+            build_dataset_ref(path)
+
+    def test_directory_path_raises_is_a_directory_error(self, tmp_path):
+        directory = tmp_path / "a_directory.csv"
+        directory.mkdir()
+
+        with pytest.raises((IsADirectoryError, PermissionError)):
+            build_dataset_ref(directory)
+
 
 # ─────────────────────────────────────────────────────────────────
 # build_dataset_ref — unsupported formats
@@ -200,6 +298,13 @@ class TestBuildDatasetRefUnsupportedFormat:
         path.write_text("{}")
 
         with pytest.raises(ValueError, match=r"data\.json"):
+            build_dataset_ref(path)
+
+    def test_no_extension_at_all_raises_value_error(self, tmp_path):
+        path = tmp_path / "data_no_extension"
+        path.write_text("some content")
+
+        with pytest.raises(ValueError, match="Unsupported dataset format"):
             build_dataset_ref(path)
 
 
