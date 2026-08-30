@@ -103,17 +103,12 @@ class TestStageResultTiming:
         assert result.duration_seconds >= 0
         assert result.stage_name == "ingestion"
 
-    def test_clock_going_backward_produces_negative_duration(self):
-        # VULNERABILITY CHARACTERIZATION: finish() has no guard against
-        # completed_at being earlier than started_at. This is reachable
-        # in practice if the real system clock is adjusted backward
-        # mid-run (NTP correction, manual clock change), not just from a
-        # misused test clock. This test documents that finish() does NOT
-        # protect against it today — it silently accepts and returns a
-        # negative duration_seconds rather than raising or clamping to
-        # zero. Flagged here rather than fixed, since deciding whether to
-        # raise, clamp, or leave as-is is a design call, not a test-file
-        # decision.
+    def test_clock_going_backward_clamps_duration_to_zero(self):
+        # FIX VERIFICATION: finish() now clamps duration_seconds to 0.0
+        # rather than returning a negative value when completed_at ends
+        # up earlier than started_at (real clock skew, or a misused
+        # injected clock). Previously this silently returned a negative
+        # number — this test now asserts the clamp actually happens.
         t0 = datetime(2026, 1, 1, 12, 0, 5, tzinfo=timezone.utc)
         t1 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)  # earlier than t0
         clock = fake_clock([t0, t1])
@@ -121,7 +116,7 @@ class TestStageResultTiming:
         open_stage = StageResult.start("ingestion", clock=clock)
         result = open_stage.finish(FakeStageResult, StageStatus.SUCCESS)
 
-        assert result.duration_seconds < 0
+        assert result.duration_seconds == 0.0
 
     def test_finish_field_colliding_with_base_field_name_raises_type_error(self):
         # Passing a field via **fields that collides with one of
@@ -172,13 +167,12 @@ class TestComputeSchemaHash:
     def test_duplicate_column_names_are_hashed_as_is(self):
         # Not deduplicated — two columns named "a" produce a different
         # hash than a single "a", which is arguably correct (a schema
-        # with a genuine duplicate column IS a different schema), but
-        # was previously untested.
+        # with a genuine duplicate column IS a different schema).
         assert compute_schema_hash(["a", "a", "b"]) != compute_schema_hash(["a", "b"])
 
     def test_mixed_type_column_names_raises_type_error(self):
         # EDGE CASE: sorted() on a mixed-type list (str and int here)
-        # raises TypeError. Both real readers always produce all-string
+        # raises TypeError. The real reader always produces all-string
         # column names, so this is only reachable via direct/malformed
         # calls to compute_schema_hash — documented, not fixed, since
         # the function's contract (per its docstring) assumes a list of
@@ -257,8 +251,7 @@ class TestBuildDatasetRefCsv:
         # an empty [] for that blank line, and _read_header_and_count_csv
         # counts it like any other row. This documents the known quirk
         # noted in the function's docstring rather than silently hiding
-        # it — a caller relying on exact row_count should be aware a
-        # trailing blank line skews the count by +1.
+        # it.
         path = tmp_path / "data.csv"
         path.write_text("id,value\n1,a\n2,b\n\n")  # note trailing blank line
 
@@ -272,7 +265,11 @@ class TestBuildDatasetRefCsv:
         with pytest.raises(FileNotFoundError):
             build_dataset_ref(path)
 
-    def test_directory_path_raises_is_a_directory_error(self, tmp_path):
+    def test_directory_path_raises_platform_specific_error(self, tmp_path):
+        # Opening a directory as if it were a file raises IsADirectoryError
+        # on Linux/Mac, but PermissionError on Windows — this is an OS-level
+        # inconsistency, not something build_dataset_ref controls, so the
+        # test accepts either.
         directory = tmp_path / "a_directory.csv"
         directory.mkdir()
 
@@ -289,6 +286,18 @@ class TestBuildDatasetRefUnsupportedFormat:
     def test_raises_value_error_for_unsupported_extension(self, tmp_path):
         path = tmp_path / "data.txt"
         path.write_text("not a supported format")
+
+        with pytest.raises(ValueError, match="Unsupported dataset format"):
+            build_dataset_ref(path)
+
+    def test_parquet_is_unsupported(self, tmp_path):
+        # .parquet support was deliberately removed (YAGNI — no stage in
+        # this pipeline currently produces or consumes Parquet). This
+        # test locks in that .parquet now falls through to the generic
+        # unsupported-format error, same as any other unrecognized
+        # extension, rather than being silently treated as valid.
+        path = tmp_path / "data.parquet"
+        path.write_bytes(b"not real parquet content")
 
         with pytest.raises(ValueError, match="Unsupported dataset format"):
             build_dataset_ref(path)
