@@ -3,13 +3,13 @@
 # -----------------------------------------------------------------------------
 
 from unittest.mock import MagicMock, patch
+
 import pytest
 import requests
 import yaml
-from src.utils.ingest import load_yaml_config
-from src.utils.ingest import calculate_sha256
-from src.utils.ingest import download_stream
 
+from src.config.loader import load_yaml_config
+from src.utils.ingest import calculate_sha256, download_stream
 
 # -----------------------------------------------------------------------------
 # load_yaml
@@ -81,7 +81,7 @@ def test_calculate_sha256_no_file(tmp_path):
     # test case 3 no file testing
     file = tmp_path / "nothing.txt"
     with pytest.raises(FileNotFoundError):
-        result = calculate_sha256(file)
+        calculate_sha256(file)
         # should raise error and end here
 
 
