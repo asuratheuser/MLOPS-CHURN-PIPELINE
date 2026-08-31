@@ -1,0 +1,29 @@
+# This is the sole runtime configuration inlet. main.py validates this file
+# before creating any run artifacts or starting a pipeline stage.
+pipeline_name: telco-customer-churn-v1
+
+dataset:
+  name: telco_customer_churn
+  url: https://raw.githubusercontent.com/IBM/telco-customer-churn-on-icp4d/master/data/Telco-Customer-Churn.csv
+  filename: Telco-Customer-Churn.csv
+  expected_sha256: 16320c9c1ec72448db59aa0a26a0b95401046bef5d02fd3aeb906448e3055e91
+
+schema:
+  target_column: Churn
+  required_columns:
+    - customerID
+    - Churn
+
+split:
+  train_size: 0.70
+  validation_size: 0.15
+  test_size: 0.15
+  random_seed: 42
+  stratify: true
+
+training:
+  model_name: logistic_regression
+  random_seed: 42
+
+artifacts:
+  directory: artifacts/runs
