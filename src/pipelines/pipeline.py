@@ -1,25 +1,28 @@
-"""pipeline orchestrator
+"""Pipeline orchestration.
 
-sequences the 
-
-run_pipeline(config):
-    
-    result_1  = ingestion_stage.run(config)
-    result_2  = schema_validation_stage.run(config, result_1)
-    result_3  = data_quality_stage.run(config, result_2)
-    result_4  = processing_stage.run(config, result_3)
-    result_5  = feature_engineering_stage.run(config, result_4)
-    result_6  = splitting_stage.run(config, result_5)
-    result_7  = training_stage.run(config, result_6)
-    result_8  = evaluation_stage.run(config, result_7)
-    
-    
-    
-    result_9  = model_validation_stage.run(config, result_8)
-    result_10 = registration_stage.run(config, result_9)
-    result_11 = deployment_stage.run(config, result_10)
-    return final_result
-
-
+Stage implementations will be added incrementally. Keeping their ordering
+here gives ``main.py`` one stable delegation point and makes the intended v1
+workflow explicit.
 """
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from main import PipelineConfig, RunContext
+
+
+def run_pipeline(config: PipelineConfig, context: RunContext) -> object:
+    """Run the v1 churn training workflow.
+
+    Future implementation order: ingestion -> schema validation -> data
+    quality -> processing -> feature engineering -> splitting -> training ->
+    evaluation.
+    """
+    del config, context
+    raise NotImplementedError(
+        "The pipeline orchestrator is configured, but stage execution has not "
+        "been implemented yet."
+    )
 
