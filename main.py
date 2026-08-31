@@ -16,10 +16,8 @@ import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 from uuid import uuid4
 
-import yaml
 from pydantic import (
     AnyHttpUrl,
     BaseModel,
@@ -28,7 +26,9 @@ from pydantic import (
     ValidationError,
     model_validator,
 )
+from yaml import YAMLError
 
+from src.config.loader import load_yaml_config
 from src.pipelines.pipeline import run_pipeline
 from src.storage.storage import get_project_root
 
@@ -143,12 +143,9 @@ def load_config(config_path: Path) -> tuple[PipelineConfig, str]:
 
     try:
         raw_text = config_path.read_text(encoding="utf-8")
-        raw_config: Any = yaml.safe_load(raw_text)
-    except (OSError, yaml.YAMLError) as exc:
+        raw_config = load_yaml_config(config_path)
+    except (OSError, TypeError, YAMLError) as exc:
         raise ConfigurationError(f"Could not load configuration: {exc}") from exc
-
-    if not isinstance(raw_config, dict):
-        raise ConfigurationError("Configuration root must be a YAML mapping")
 
     try:
         config = PipelineConfig.model_validate(raw_config)
