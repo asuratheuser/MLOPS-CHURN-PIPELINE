@@ -65,7 +65,7 @@ class TestLoadConfig:
         config_path = tmp_path / "pipeline.yaml"
         config_path.write_text("- not\n- a mapping\n", encoding="utf-8")
 
-        with pytest.raises(main.ConfigurationError, match="YAML mapping"):
+        with pytest.raises(main.ConfigurationError, match="root must be a mapping"):
             main.load_config(config_path)
 
     def test_rejects_unknown_configuration_key(self, tmp_path: Path) -> None:
