@@ -142,8 +142,7 @@ def load_config(config_path: Path) -> tuple[PipelineConfig, str]:
         raise ConfigurationError("Configuration file must use a .yaml or .yml extension")
 
     try:
-        raw_text = config_path.read_text(encoding="utf-8")
-        raw_config = load_yaml_config(config_path)
+        raw_text, raw_config = load_yaml_config(config_path)
     except (OSError, TypeError, YAMLError) as exc:
         raise ConfigurationError(f"Could not load configuration: {exc}") from exc
 
