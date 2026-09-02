@@ -21,9 +21,10 @@ def test_load_yaml_config_success(tmp_path):
     config_file.write_text("batch_size: 32\nenvironment: 'test'")
 
     # Execute
-    result = load_yaml_config(config_file)
+    raw_text, result = load_yaml_config(config_file)
 
     # Assert
+    assert raw_text == "batch_size: 32\nenvironment: 'test'"
     assert result == {"batch_size": 32, "environment": "test"}
 
 
@@ -33,8 +34,9 @@ def test_load_yaml_config_empty_file(tmp_path):
     empty_file.write_text("")
 
     # Execute
-    result = load_yaml_config(empty_file)
+    raw_text, result = load_yaml_config(empty_file)
 
+    assert raw_text == ""
     assert result == {}
 
 
